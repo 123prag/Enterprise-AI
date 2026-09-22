@@ -97,6 +97,46 @@ enterprise-ai-incident-copilot/
 └── README.md
 ```
 
+## Database design (Phase 2)
+
+13 tables under `app/database/models.py`, split into three groups:
+
+- **Core entities**: `users`, `devices`, `software_versions`, `system_status`,
+  `incidents`, `incident_history`, `tickets`
+- **Knowledge base**: `documents`, `document_metadata` — registers the 15
+  synthetic SOPs/guides/policies/reference docs under `data/documents/` with
+  department, version, and access-level metadata for RAG filtering
+- **Agentic/observability**: `agent_runs`, `tool_calls`, `evaluations`,
+  `human_approvals` — populated in later phases as the LangGraph pipeline runs
+
+Seed data (`app/database/seed.py`, deterministic — fixed seed 42):
+
+- 60 users across 8 departments, 1–2 devices each (Windows/macOS/Linux mix)
+- 150 incidents across 5 categories (VPN, Authentication, Network, Endpoint
+  Security, Software) with realistic error codes, severities, and resolutions
+- A deliberately-seeded known-bad version pairing (CorpVPN Client 4.12.1 +
+  Windows 24H2 → VPN Error 691) that is referenced consistently across both
+  the structured data *and* the synthetic documents below, so the RAG agent
+  (Phase 3) and SQL agent (Phase 4) can be evaluated on whether they actually
+  cross-reference the two sources correctly.
+
+Seed the local database:
+
+```bash
+python -m app.database.seed          # seed if empty
+python -m app.database.seed --reset   # drop + reseed
+```
+
+## Synthetic knowledge base (Phase 2)
+
+15 original documents in `data/documents/` (SOPs, guides, policies,
+reference tables, release notes) covering VPN, authentication, MFA,
+network, endpoint security, and IT service management — all fabricated,
+not copied from any real vendor/enterprise documentation. Each carries
+YAML frontmatter (`document_type`, `department`, `version`,
+`access_level`) that the RAG ingestion pipeline (Phase 3) will parse into
+chunk metadata for filtering.
+
 ## Getting started (local mode — no API keys needed)
 
 ```bash
@@ -119,7 +159,7 @@ mypy app
 ## Roadmap (build phases)
 
 - [x] Phase 1 — Architecture, repo scaffolding, config abstraction, health check
-- [ ] Phase 2 — Synthetic enterprise dataset (documents + DB)
+- [x] Phase 2 — Synthetic enterprise dataset (13-table schema + 15 SOP/guide/policy documents + deterministic seed generator)
 - [ ] Phase 3 — Hybrid RAG pipeline
 - [ ] Phase 4 — SQL + incident tools
 - [ ] Phase 5 — LangGraph orchestration
