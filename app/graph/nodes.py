@@ -7,15 +7,16 @@ independent of both LangGraph and the concrete tool/RAG implementations
 escalation logic in this sandbox without the langgraph package or the
 pydantic/SQLAlchemy-based tools being installed.
 
-Diagnosis and validation here are intentionally minimal placeholders --
-Phase 6 replaces them with dedicated ``diagnosis_agent.py`` /
-``validation_agent.py`` modules that reason more carefully over the
-gathered evidence. The graph *shape* (fan-out to RAG/SQL/tools, fan-in to
-diagnosis, validate-or-retry-or-escalate) is final as of this phase.
+Diagnosis and validation delegate to the dedicated agents in
+``app/agents/diagnosis_agent.py`` and ``app/agents/validation_agent.py``
+(Phase 6). The graph *shape* (fan-out to RAG/SQL/tools, fan-in to
+diagnosis, validate-or-retry-or-escalate) was finalized in Phase 5 and is
+unchanged here.
 """
 
 from __future__ import annotations
 
+from app.agents import diagnosis_agent, validation_agent
 from app.agents.orchestrator import classify
 from app.graph.deps import GraphDeps
 from app.graph.state import GraphState
@@ -32,15 +33,16 @@ def router_node(state: GraphState, deps: GraphDeps) -> dict:
 def rag_node(state: GraphState, deps: GraphDeps) -> dict:
     classification = state.get("classification", {})
     if not classification.get("requires_rag"):
-        return {"retrieved_documents": []}
+        return {"retrieved_documents": [], "rag_answer": ""}
 
     result = deps.search_knowledge_base(state["user_query"], None)
     ok = result.get("success", True)
     citations = result.get("citations", []) if ok else []
+    rag_answer = result.get("answer", "") if ok else ""
     new_errors = state.get("errors", [])
     if not ok:
         new_errors = new_errors + [result.get("error", "unknown RAG error")]
-    return {"retrieved_documents": citations, "errors": new_errors}
+    return {"retrieved_documents": citations, "rag_answer": rag_answer, "errors": new_errors}
 
 
 def sql_node(state: GraphState, deps: GraphDeps) -> dict:
@@ -92,78 +94,58 @@ def tools_node(state: GraphState, deps: GraphDeps) -> dict:
 
 
 def diagnosis_node(state: GraphState, deps: GraphDeps) -> dict:
-    """Placeholder diagnosis: combines whatever evidence was gathered into
-    a concise summary and a heuristic confidence score. Replaced by a
-    dedicated agent in Phase 6.
-    """
     classification = state.get("classification", {})
-    docs = state.get("retrieved_documents", [])
     incidents = state.get("incident_results", [])
+    citations = state.get("retrieved_documents", [])
 
-    evidence = []
-    if docs:
-        evidence.append(f"{len(docs)} relevant document section(s) found.")
-    if incidents:
-        evidence.append(f"{len(incidents)} historical incident(s) found in the same category.")
+    known_problematic = False
+    if not classification.get("requires_human"):
+        signal = diagnosis_agent.extract_software_signal(
+            state["user_query"], classification.get("category", ""), incidents
+        )
+        if signal:
+            product, version = signal
+            result = deps.run_tool(
+                "check_software_version", {"product_name": product, "version": version}
+            )
+            known_problematic = bool(result.get("is_known_problematic"))
 
-    if classification.get("requires_human"):
-        diagnosis_text = (
-            "This request involves a high-risk action that cannot be diagnosed "
-            "or executed automatically and must be reviewed by a human."
-        )
-        confidence = 0.0
-        risk_level = "high"
-    elif not evidence:
-        diagnosis_text = (
-            "No supporting documentation or historical incidents were found "
-            "for this query."
-        )
-        confidence = 0.2
-        risk_level = "medium"
-    else:
-        diagnosis_text = " ".join(evidence) + " See cited sources for details."
-        confidence = min(0.5 + 0.2 * len(evidence), 0.95)
-        risk_level = "low"
+    result = diagnosis_agent.diagnose(
+        user_query=state["user_query"],
+        classification=classification,
+        rag_answer=state.get("rag_answer", ""),
+        citations=citations,
+        incidents=incidents,
+        tool_results=state.get("tool_results", {}),
+        known_problematic_version=known_problematic,
+    )
 
     diagnosis = {
-        "diagnosis": diagnosis_text,
-        "confidence": confidence,
-        "evidence": evidence,
-        "recommended_actions": list(state.get("tool_results", {}).keys()),
-        "risk_level": risk_level,
-        "requires_human": classification.get("requires_human", False),
+        "diagnosis": result.diagnosis,
+        "confidence": result.confidence,
+        "evidence": result.evidence,
+        "recommended_actions": result.recommended_actions,
+        "risk_level": result.risk_level,
+        "requires_human": result.requires_human,
     }
-    return {"diagnosis": diagnosis, "confidence": confidence, "risk_level": risk_level}
+    return {"diagnosis": diagnosis, "confidence": result.confidence, "risk_level": result.risk_level}
 
 
 def validation_node(state: GraphState, deps: GraphDeps) -> dict:
-    """Placeholder validation: checks the diagnosis is evidence-backed and
-    above the confidence threshold. Replaced by a dedicated agent (with
-    hallucination/citation/policy checks) in Phase 6.
-    """
+    classification = state.get("classification", {})
     diagnosis = state.get("diagnosis", {})
-    confidence = state.get("confidence", 0.0)
-    is_high_risk = diagnosis.get("requires_human", False)
+    citation_count = len(state.get("retrieved_documents", []))
 
-    reasons = []
-    is_valid = True
-
-    if is_high_risk:
-        is_valid = False
-        reasons.append("High-risk action always requires human approval.")
-    elif confidence < CONFIDENCE_THRESHOLD_DEFAULT:
-        is_valid = False
-        reasons.append(
-            f"Confidence {confidence:.2f} below threshold {CONFIDENCE_THRESHOLD_DEFAULT}."
-        )
-    elif not diagnosis.get("evidence"):
-        is_valid = False
-        reasons.append("Diagnosis is not backed by any retrieved evidence.")
-
+    result = validation_agent.validate(
+        diagnosis=diagnosis,
+        classification=classification,
+        citation_count=citation_count,
+        confidence_threshold=CONFIDENCE_THRESHOLD_DEFAULT,
+    )
     validation = {
-        "is_valid": is_valid,
-        "requires_human": is_high_risk or not is_valid,
-        "reasons": reasons,
+        "is_valid": result.is_valid,
+        "requires_human": result.requires_human,
+        "reasons": result.reasons,
     }
     return {"validation": validation}
 

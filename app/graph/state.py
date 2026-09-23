@@ -31,6 +31,7 @@ class GraphState(TypedDict, total=False):
 
     # evidence gathered by parallel branches
     retrieved_documents: list[dict[str, Any]]
+    rag_answer: str
     incident_results: list[dict[str, Any]]
     tool_results: dict[str, Any]
 

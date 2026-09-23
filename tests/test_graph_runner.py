@@ -11,9 +11,9 @@ from app.graph.deps import GraphDeps
 from app.graph.runner import run_graph
 
 
-def _deps(kb_citations=None, incidents=None, tool_success=True):
+def _deps(kb_citations=None, incidents=None, tool_success=True, known_problematic_version=False):
     def search_kb(query, department):
-        return {"success": True, "citations": kb_citations or []}
+        return {"success": True, "citations": kb_citations or [], "answer": "Synthesized answer text."}
 
     def search_incidents(filters):
         return {"success": True, "incidents": incidents or []}
@@ -23,6 +23,8 @@ def _deps(kb_citations=None, incidents=None, tool_success=True):
             return {"success": False, "error": "simulated tool failure"}
         if name == "create_ticket":
             return {"success": True, "ticket_ref": "TCK-999999"}
+        if name == "check_software_version":
+            return {"success": True, "is_known_problematic": known_problematic_version}
         return {"success": True}
 
     return GraphDeps(
@@ -35,7 +37,11 @@ def _deps(kb_citations=None, incidents=None, tool_success=True):
 def test_strong_evidence_reaches_safe_response_without_escalation():
     deps = _deps(
         kb_citations=[{"document_name": "VPN Error Code Reference"}, {"document_name": "VPN SOP"}],
-        incidents=[{"incident_ref": "INC-1"}, {"incident_ref": "INC-2"}],
+        incidents=[
+            {"incident_ref": "INC-1", "software_version": "4.12.1"},
+            {"incident_ref": "INC-2", "software_version": "4.12.1"},
+        ],
+        known_problematic_version=True,
     )
     state = run_graph("My VPN gives error 691, has this happened before?", deps)
 
@@ -44,6 +50,8 @@ def test_strong_evidence_reaches_safe_response_without_escalation():
     assert "human_approval" not in state
     assert state["final_response"]
     assert state["retry_count"] == 0
+    # the known-bad-version cross-reference should show up in the evidence trail
+    assert any("known-problematic" in e for e in state["diagnosis"]["evidence"])
 
 
 def test_no_evidence_retries_then_escalates_to_human():

@@ -261,6 +261,53 @@ Verified end-to-end in this sandbox across 3 scenarios: strong evidence
 escalation; high-risk action → immediate escalation with the risky tool
 action correctly **blocked from execution**, not merely flagged.
 
+## Diagnosis & validation agents (Phase 6)
+
+**Diagnosis** (`app/agents/diagnosis_agent.py`) combines RAG citations,
+the RAG pipeline's own synthesized answer, historical incidents, and a
+live cross-reference against `check_software_version` into one
+structured output. Confidence is **deterministic and evidence-driven**,
+not a model's self-reported certainty — it's built additively from what
+was actually found:
+
+| Signal | Confidence contribution |
+|---|---|
+| (base) | 0.15 |
+| RAG citations found | +0.30 |
+| Historical incidents found | +0.20 |
+| Confirmed known-bad software version | +0.25 |
+| Degraded live system status | +0.15 |
+
+`extract_software_signal()` pulls a (product, version) pair from an
+explicit mention in the query or the most common version among retrieved
+incidents, then the diagnosis node calls the real `check_software_version`
+tool (not a hardcoded lookup) to confirm it — this is the mechanism that
+lets the graph automatically surface the CorpVPN 4.12.1 / Windows 24H2
+regression seeded back in Phase 2.
+
+**Validation** (`app/agents/validation_agent.py`) checks, in order:
+1. **Policy compliance** — a high-risk classification always wins,
+   regardless of diagnosis confidence (a 0.99-confidence diagnosis is
+   still rejected if the request itself was high-risk).
+2. **Evidence support** — a diagnosis with zero evidence entries fails.
+3. **Citation correctness / hallucination** — every `[n]` marker in the
+   diagnosis text must correspond to a real citation; a reference to a
+   citation that doesn't exist fails validation by name.
+4. **Confidence threshold** — below `DIAGNOSIS_CONFIDENCE_THRESHOLD`
+   (default 0.7), human review is required.
+5. **Unsafe recommendations** — the diagnosis agent is never allowed to
+   recommend direct execution of a high-risk action.
+
+Both agents are pure functions over plain data (no pydantic/SQLAlchemy),
+so all **13 of their tests were executed directly with the real Python
+interpreter** in this sandbox — no shim needed — covering the zero-
+confidence high-risk short-circuit, monotonic confidence growth across
+each evidence source, verbatim use of the RAG answer, both signal-
+extraction paths, and all 5 validation failure modes above. The full
+graph (Phase 5's runner, now wired to these real agents) was re-verified
+end-to-end afterward: all 6 scenario tests still pass, including the
+known-bad-version case reaching 0.90 confidence.
+
 ## Getting started (local mode — no API keys needed)
 
 ```bash
@@ -287,7 +334,7 @@ mypy app
 - [x] Phase 3 — Hybrid RAG pipeline (ingestion, chunking, embeddings, FAISS/Qdrant, BM25, hybrid fusion, reranking, citations, swappable LLM)
 - [x] Phase 4 — SQL agent (safe/parameterized, read-only) + typed tool set (search_incidents, get_incident_history, calculate_priority, check_system_status, check_software_version, create/update/get_ticket, search_knowledge_base) + tool agent dispatcher
 - [x] Phase 5 — LangGraph orchestration (router -> parallel RAG/SQL/tools -> diagnosis -> validation -> safe response / retry / human review)
-- [ ] Phase 6 — Diagnosis + validation agents
+- [x] Phase 6 — Diagnosis + validation agents (evidence-weighted confidence, known-bad-version cross-referencing, hallucination/citation/policy checks)
 - [ ] Phase 7 — Guardrails + human approval
 - [ ] Phase 8 — FastAPI (full route set)
 - [ ] Phase 9 — Streamlit UI
