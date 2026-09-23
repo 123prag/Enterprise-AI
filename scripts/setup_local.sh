@@ -12,9 +12,27 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Windows Git Bash commonly only has `python`, not `python3`.
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  echo "ERROR: neither python3 nor python found on PATH"
+  exit 1
+fi
+
 echo "==> Creating virtual environment (.venv)"
-python3 -m venv .venv
-source .venv/bin/activate
+"$PYTHON" -m venv .venv
+
+if [ -f .venv/bin/activate ]; then
+  source .venv/bin/activate        # Linux / macOS
+elif [ -f .venv/Scripts/activate ]; then
+  source .venv/Scripts/activate    # Windows (Git Bash / MINGW64)
+else
+  echo "ERROR: could not find venv activate script in .venv/bin or .venv/Scripts"
+  exit 1
+fi
 
 echo "==> Upgrading pip"
 pip install --upgrade pip -q
@@ -42,7 +60,11 @@ echo "==> Booting API for a smoke check (5s)"
 uvicorn app.main:app --port 8000 &
 SERVER_PID=$!
 sleep 3
-curl -sf http://localhost:8000/health && echo
-kill $SERVER_PID
+if command -v curl >/dev/null 2>&1; then
+  curl -sf http://localhost:8000/health && echo
+else
+  echo "(curl not found -- skipping smoke HTTP check; server was still started)"
+fi
+kill $SERVER_PID 2>/dev/null || true
 
 echo "==> Done. If anything above failed, report the output for fixes."
