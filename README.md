@@ -173,6 +173,43 @@ Build the index and run a smoke query:
 python scripts/build_rag_index.py
 ```
 
+## SQL agent & tools (Phase 4)
+
+**SQL safety model**: the primary path (`app/agents/sql_agent.py`
+`SQLAgent`) never builds SQL by string interpolation — every query is a
+SQLAlchemy expression with bound parameters, so it is not injectable by
+construction. A separate `execute_readonly_sql()` path exists for any
+future free-form/LLM-generated SQL and is gated by `validate_readonly_sql()`,
+which rejects anything that isn't a single `SELECT` against a whitelisted
+table, with no forbidden keywords (`insert`/`update`/`delete`/`drop`/
+`alter`/`;`/`--`/etc). Verified directly against 8 attack patterns
+(DROP, DELETE, UPDATE, stacked statements, INSERT, non-whitelisted table,
+empty input) — all correctly rejected — plus one legitimate parameterized
+SELECT, correctly accepted.
+
+**Tools** (`app/tools/`), each with typed Pydantic input/output,
+validation, error handling, and logging:
+
+| Tool | Purpose |
+|---|---|
+| `search_knowledge_base` | RAG pipeline query with department/type filtering |
+| `search_incidents` | Structured, parameterized incident search |
+| `get_incident_history` | Audit trail + related-incident lookup for one incident |
+| `check_system_status` | Live service status (VPN gateways, SSO, DNS, ...) |
+| `check_software_version` | Known-problematic-version lookup |
+| `create_ticket` / `update_ticket` / `get_ticket` | Ticket lifecycle, with illegal-transition guards (e.g. `pending_approval` can't jump straight to `resolved`) |
+| `calculate_priority` | Deterministic, explainable severity/impact scoring (not an LLM judgment call) |
+
+`app/agents/tool_agent.py` provides one dispatch point (`dispatch(tool_name,
+input_dict)`) used by the LangGraph orchestrator (Phase 5) — it validates
+input against the tool's schema, runs it, and logs every call's latency/
+success/error into the `tool_calls` table for observability.
+
+Priority scoring was verified directly: a low-severity/single-user
+incident scores 1.0 ("low"), while a high-severity incident affecting 5+
+users on a known-bad software version in a critical department scores
+6.0 ("critical").
+
 ## Getting started (local mode — no API keys needed)
 
 ```bash
@@ -197,7 +234,7 @@ mypy app
 - [x] Phase 1 — Architecture, repo scaffolding, config abstraction, health check
 - [x] Phase 2 — Synthetic enterprise dataset (13-table schema + 15 SOP/guide/policy documents + deterministic seed generator)
 - [x] Phase 3 — Hybrid RAG pipeline (ingestion, chunking, embeddings, FAISS/Qdrant, BM25, hybrid fusion, reranking, citations, swappable LLM)
-- [ ] Phase 4 — SQL + incident tools
+- [x] Phase 4 — SQL agent (safe/parameterized, read-only) + typed tool set (search_incidents, get_incident_history, calculate_priority, check_system_status, check_software_version, create/update/get_ticket, search_knowledge_base) + tool agent dispatcher
 - [ ] Phase 5 — LangGraph orchestration
 - [ ] Phase 6 — Diagnosis + validation agents
 - [ ] Phase 7 — Guardrails + human approval
