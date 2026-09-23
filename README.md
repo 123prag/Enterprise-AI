@@ -210,6 +210,57 @@ incident scores 1.0 ("low"), while a high-severity incident affecting 5+
 users on a known-bad software version in a critical department scores
 6.0 ("critical").
 
+## Orchestration (Phase 5)
+
+```
+START -> router -> {rag, sql, tools}  (fan-out, run concurrently)
+                          |
+                          v  (fan-in)
+                      diagnosis
+                          |
+                          v
+                     validation
+                    /     |      \
+              valid   invalid,    requires_human
+                |      retries       |
+                v      left          v
+         safe_response  |      human_review
+                |        v            |
+               END   (loop to     END
+                     diagnosis)
+```
+
+**Router** (`app/agents/orchestrator.py`) is a deliberately transparent,
+rule-based classifier — not an LLM call — since routing decisions gate
+which agents run and whether an action requires human approval, and
+those need to be deterministic and auditable. It was verified against
+every sample query in the spec, including the one hard requirement:
+`"Change the production VPN configuration."` correctly sets
+`requires_human=True` and `priority=critical`.
+
+**Graph shape** is implemented twice from the same node functions
+(`app/graph/nodes.py`), so it's genuinely testable in this environment
+without the `langgraph` package installed:
+- `app/graph/runner.py` — a dependency-free sequential executor with
+  identical semantics (fan-out/fan-in, retry loop bounded by
+  `MAX_AGENT_RETRIES`, immediate escalation for high-risk actions)
+- `app/graph/workflow.py` — the real `langgraph.graph.StateGraph` wiring
+  for production, where RAG/SQL/tools genuinely execute concurrently
+
+Both consume the same `GraphDeps` dependency-injection point
+(`app/graph/deps.py`), so tests use fakes while production wires to the
+real `tool_agent.dispatch`.
+
+**Diagnosis and validation are placeholders in this phase** (heuristic
+confidence scoring, evidence-presence checks) — Phase 6 replaces them
+with dedicated agents that reason more carefully over the gathered
+evidence. The graph *shape*, retry bound, and escalation rule are final.
+
+Verified end-to-end in this sandbox across 3 scenarios: strong evidence
+→ safe response (confidence 0.90); no evidence → 3 retries → human
+escalation; high-risk action → immediate escalation with the risky tool
+action correctly **blocked from execution**, not merely flagged.
+
 ## Getting started (local mode — no API keys needed)
 
 ```bash
@@ -235,7 +286,7 @@ mypy app
 - [x] Phase 2 — Synthetic enterprise dataset (13-table schema + 15 SOP/guide/policy documents + deterministic seed generator)
 - [x] Phase 3 — Hybrid RAG pipeline (ingestion, chunking, embeddings, FAISS/Qdrant, BM25, hybrid fusion, reranking, citations, swappable LLM)
 - [x] Phase 4 — SQL agent (safe/parameterized, read-only) + typed tool set (search_incidents, get_incident_history, calculate_priority, check_system_status, check_software_version, create/update/get_ticket, search_knowledge_base) + tool agent dispatcher
-- [ ] Phase 5 — LangGraph orchestration
+- [x] Phase 5 — LangGraph orchestration (router -> parallel RAG/SQL/tools -> diagnosis -> validation -> safe response / retry / human review)
 - [ ] Phase 6 — Diagnosis + validation agents
 - [ ] Phase 7 — Guardrails + human approval
 - [ ] Phase 8 — FastAPI (full route set)
