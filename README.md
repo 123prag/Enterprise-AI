@@ -361,6 +361,37 @@ blocked before the router ever runs, and a simulated leaked API key in
 a RAG answer correctly redacted from the final response even though it
 had high enough confidence to otherwise pass validation cleanly.
 
+## API (Phase 8)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/chat` | Runs a query through the full graph (guardrails → router → RAG/SQL/tools → diagnosis → validation → response/escalation) |
+| POST | `/incidents` | Create an incident record |
+| GET | `/incidents/{incident_ref}` | Incident detail + history + related incidents |
+| POST | `/search` | Direct knowledge-base + incident search, bypassing the full agentic pipeline |
+| POST | `/approve-action` / `/reject-action` | Human decisions on a pending approval |
+| GET | `/health` | Liveness probe |
+| GET | `/metrics` | Real counts from `agent_runs`/`tool_calls`/`human_approvals`/`evaluations` — zeros on an empty DB, never fabricated |
+| POST | `/evaluate` | Returns `501 Not Implemented` with a clear message pointing to Phase 10, rather than fabricating evaluation results before the framework exists |
+
+`/chat` executes through `app.graph.runner.run_graph` (the dependency-free
+runner from Phases 5–7) rather than the LangGraph `StateGraph` directly —
+both implement the identical state machine over the identical node
+functions, so this is a deployment-portability choice, not a different
+pipeline. `app.graph.workflow.build_graph()` remains available for
+LangGraph-native deployment/visualization.
+
+Every route validates input via Pydantic (422 on bad payloads), returns
+proper status codes (404 unknown incident/approval, 400 invalid approval
+decision, 429 rate-limited, 501 not-yet-implemented), and goes through a
+bearer-token auth dependency (a no-op in local mode when `API_AUTH_TOKEN`
+is unset) plus the Phase 7 `RateLimiter`.
+
+`tests/test_api.py` covers all 8 endpoints end-to-end against a seeded
+in-memory database, including the full human-approval round trip via the
+API (chat triggers escalation → approve via `/approve-action` → confirm
+it can't be re-decided) and a real 429 after exhausting the rate limit.
+
 ## Getting started (local mode — no API keys needed)
 
 ```bash
@@ -389,7 +420,7 @@ mypy app
 - [x] Phase 5 — LangGraph orchestration (router -> parallel RAG/SQL/tools -> diagnosis -> validation -> safe response / retry / human review)
 - [x] Phase 6 — Diagnosis + validation agents (evidence-weighted confidence, known-bad-version cross-referencing, hallucination/citation/policy checks)
 - [x] Phase 7 — Guardrails (input/output/security) + human approval workflow (request/approve/reject/request-more-info, persisted to `human_approvals`)
-- [ ] Phase 8 — FastAPI (full route set)
+- [x] Phase 8 — FastAPI (full route set: /chat, /incidents, /search, /approve-action, /reject-action, /health, /metrics, /evaluate) (full route set)
 - [ ] Phase 9 — Streamlit UI
 - [ ] Phase 10 — Evaluation framework
 - [ ] Phase 11 — Observability

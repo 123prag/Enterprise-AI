@@ -1,14 +1,14 @@
 """FastAPI application entrypoint.
 
-Phase 1 only wires up the app skeleton and a health check so the repo is
-runnable end-to-end from commit one. Subsequent phases add the real
-routes (/chat, /incidents, /search, /approve-action, ...) in app/api/routes.py.
+Wires in the full route set (chat, incidents, search, approvals, metrics,
+evaluate) from app/api/routes.py, on top of the Phase 1 health check.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api.routes import router as api_router
 from app.config import get_settings
 
 settings = get_settings()
@@ -21,6 +21,8 @@ app = FastAPI(
         "combining RAG, SQL, tool use, and human-in-the-loop review."
     ),
 )
+
+app.include_router(api_router)
 
 
 @app.get("/health", tags=["system"])
