@@ -22,6 +22,16 @@ from pydantic import BaseModel, ValidationError
 
 from app.database.models import ToolCall as ToolCallRow
 from app.database.session import get_session
+from app.tools.approvals import (
+    DecideApprovalInput,
+    GetPendingApprovalsInput,
+    RequestHumanApprovalInput,
+    approve_action,
+    get_pending_approvals,
+    reject_action,
+    request_human_approval,
+    request_more_information,
+)
 from app.tools.incidents import (
     CalculatePriorityInput,
     GetIncidentHistoryInput,
@@ -65,6 +75,11 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     "update_ticket": ToolSpec(UpdateTicketInput, update_ticket),
     "get_ticket": ToolSpec(GetTicketInput, get_ticket),
     "calculate_priority": ToolSpec(CalculatePriorityInput, calculate_priority),
+    "request_human_approval": ToolSpec(RequestHumanApprovalInput, request_human_approval),
+    "approve_action": ToolSpec(DecideApprovalInput, approve_action),
+    "reject_action": ToolSpec(DecideApprovalInput, reject_action),
+    "request_more_information": ToolSpec(DecideApprovalInput, request_more_information),
+    "get_pending_approvals": ToolSpec(GetPendingApprovalsInput, get_pending_approvals),
 }
 
 

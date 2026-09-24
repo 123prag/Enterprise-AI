@@ -20,9 +20,46 @@ from app.agents import diagnosis_agent, validation_agent
 from app.agents.orchestrator import classify
 from app.graph.deps import GraphDeps
 from app.graph.state import GraphState
+from app.guardrails.input import check_input
+from app.guardrails.output import check_output
 
 MAX_RETRIES_DEFAULT = 2
 CONFIDENCE_THRESHOLD_DEFAULT = 0.7
+
+REFUSAL_MESSAGE = (
+    "I can't help with that request. It appears to contain an attempt to "
+    "override my instructions or access sensitive internal information, "
+    "which I'm not able to act on."
+)
+
+
+def guardrail_input_node(state: GraphState, deps: GraphDeps) -> dict:
+    result = check_input(state["user_query"])
+    if not result.is_safe:
+        return {
+            "blocked": True,
+            "block_reason": "; ".join(result.violations),
+            "final_response": REFUSAL_MESSAGE,
+        }
+    return {"blocked": False, "block_reason": ""}
+
+
+def guardrail_output_node(state: GraphState, deps: GraphDeps) -> dict:
+    text = state.get("final_response", "")
+    if not text:
+        return {}
+
+    result = check_output(text)
+    if result.is_safe:
+        return {}
+
+    return {
+        "final_response": (
+            "[Response withheld: the generated content triggered an output "
+            "safety check and has been blocked from display.]"
+        ),
+        "errors": state.get("errors", []) + result.violations,
+    }
 
 
 def router_node(state: GraphState, deps: GraphDeps) -> dict:
@@ -165,15 +202,30 @@ def safe_response_node(state: GraphState, deps: GraphDeps) -> dict:
 def human_review_node(state: GraphState, deps: GraphDeps) -> dict:
     diagnosis = state.get("diagnosis", {})
     reasons = state.get("validation", {}).get("reasons", [])
+    risk_level = state.get("risk_level", "medium")
+    reason_text = "; ".join(reasons) or diagnosis.get("diagnosis", "")
+
+    approval_result = deps.run_tool(
+        "request_human_approval",
+        {
+            "request_id": state.get("request_id", "unknown"),
+            "proposed_action": state["user_query"],
+            "risk_level": risk_level,
+            "reason": reason_text,
+        },
+    )
+
     response = (
         "This request has been escalated for human review "
-        f"(risk level: {state.get('risk_level', 'unknown')}). "
-        f"Reason: {'; '.join(reasons) if reasons else 'policy requires approval.'}"
+        f"(risk level: {risk_level}). "
+        f"Reason: {reason_text or 'policy requires approval.'}"
     )
     human_approval = {
+        "approval_id": approval_result.get("approval_id"),
         "proposed_action": state["user_query"],
-        "risk_level": state.get("risk_level", "medium"),
-        "reason": "; ".join(reasons) or diagnosis.get("diagnosis", ""),
+        "risk_level": risk_level,
+        "reason": reason_text,
         "decision": "pending",
+        "persisted": approval_result.get("success", False),
     }
     return {"final_response": response, "human_approval": human_approval}

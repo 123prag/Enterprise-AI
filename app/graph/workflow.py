@@ -24,6 +24,8 @@ from app.config import get_settings
 from app.graph.deps import GraphDeps, default_deps
 from app.graph.nodes import (
     diagnosis_node,
+    guardrail_input_node,
+    guardrail_output_node,
     human_review_node,
     rag_node,
     router_node,
@@ -33,6 +35,10 @@ from app.graph.nodes import (
     validation_node,
 )
 from app.graph.state import GraphState
+
+
+def _guardrail_router(state: GraphState) -> str:
+    return "blocked" if state.get("blocked") else "proceed"
 
 
 def _validation_router(state: GraphState) -> str:
@@ -66,6 +72,7 @@ def build_graph(deps: GraphDeps | None = None):
     deps = deps or default_deps()
     graph = StateGraph(GraphState)
 
+    graph.add_node("guardrail_input", partial(guardrail_input_node, deps=deps))
     graph.add_node("router", partial(router_node, deps=deps))
     graph.add_node("rag", partial(rag_node, deps=deps))
     graph.add_node("sql", partial(sql_node, deps=deps))
@@ -75,8 +82,14 @@ def build_graph(deps: GraphDeps | None = None):
     graph.add_node("increment_retry", _increment_retry)
     graph.add_node("safe_response", partial(safe_response_node, deps=deps))
     graph.add_node("human_review", partial(human_review_node, deps=deps))
+    graph.add_node("guardrail_output", partial(guardrail_output_node, deps=deps))
 
-    graph.add_edge(START, "router")
+    graph.add_edge(START, "guardrail_input")
+    graph.add_conditional_edges(
+        "guardrail_input",
+        _guardrail_router,
+        {"blocked": "guardrail_output", "proceed": "router"},
+    )
 
     # Fan-out: RAG, SQL, and tools all run off the router with no
     # dependency on each other -- LangGraph executes them in the same
@@ -103,7 +116,8 @@ def build_graph(deps: GraphDeps | None = None):
     )
     graph.add_edge("increment_retry", "diagnosis")
 
-    graph.add_edge("safe_response", END)
-    graph.add_edge("human_review", END)
+    graph.add_edge("safe_response", "guardrail_output")
+    graph.add_edge("human_review", "guardrail_output")
+    graph.add_edge("guardrail_output", END)
 
     return graph.compile()

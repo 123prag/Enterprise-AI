@@ -29,6 +29,8 @@ from __future__ import annotations
 from app.graph.deps import GraphDeps
 from app.graph.nodes import (
     diagnosis_node,
+    guardrail_input_node,
+    guardrail_output_node,
     human_review_node,
     rag_node,
     router_node,
@@ -57,6 +59,11 @@ def run_graph(
         "errors": [],
     }
 
+    state.update(guardrail_input_node(state, deps))
+    if state.get("blocked"):
+        state.update(guardrail_output_node(state, deps))
+        return state
+
     state.update(router_node(state, deps))
 
     # Fan-out (independent branches) then fan-in -- order doesn't matter
@@ -73,18 +80,22 @@ def run_graph(
         if validation["requires_human"] and state["diagnosis"].get("requires_human"):
             # High-risk actions escalate immediately, no retry loop.
             state.update(human_review_node(state, deps))
+            state.update(guardrail_output_node(state, deps))
             return state
 
         if validation["is_valid"]:
             state.update(safe_response_node(state, deps))
+            state.update(guardrail_output_node(state, deps))
             return state
 
         state["retry_count"] = state.get("retry_count", 0) + 1
         if state["retry_count"] > max_retries:
             state.update(human_review_node(state, deps))
+            state.update(guardrail_output_node(state, deps))
             return state
         # else: loop back to diagnosis (retry), never exceeding max_retries
 
     # Defensive fallback -- should be unreachable given the loop bounds above.
     state.update(human_review_node(state, deps))
+    state.update(guardrail_output_node(state, deps))
     return state

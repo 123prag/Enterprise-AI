@@ -26,6 +26,10 @@ class GraphState(TypedDict, total=False):
     user_query: str
     user_access_level: str
 
+    # input guardrails
+    blocked: bool
+    block_reason: str
+
     # routing
     classification: dict[str, Any]
 

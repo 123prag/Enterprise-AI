@@ -308,6 +308,59 @@ graph (Phase 5's runner, now wired to these real agents) was re-verified
 end-to-end afterward: all 6 scenario tests still pass, including the
 known-bad-version case reaching 0.90 confidence.
 
+## Guardrails & human approval (Phase 7)
+
+The graph now has two more nodes, bookending everything from Phase 5/6:
+
+```
+START -> guardrail_input --blocked--> guardrail_output -> END
+              |
+           proceed
+              v
+           router -> {rag, sql, tools} -> diagnosis -> validation -> ... -> safe_response/human_review -> guardrail_output -> END
+```
+
+**Input guardrails** (`app/guardrails/input.py`) pattern-match for prompt
+injection/jailbreak attempts, requests for system internals or secrets,
+and SQL-injection-shaped strings — a blocked query never reaches the
+router at all. **Output guardrails** (`app/guardrails/output.py`) scan
+every final response for leaked credentials (API-key/AWS-key shaped
+strings, `-----BEGIN ... PRIVATE KEY-----`) and system-prompt echoes,
+redacting or withholding the response regardless of how the leak got
+there — this is a genuinely independent safety net from Phase 6's
+hallucination/citation checks, verified by a test where the diagnosis
+pipeline has no reason to flag a leaked-looking string but the output
+guardrail catches it anyway.
+
+**Security utilities** (`app/guardrails/security.py`): a real sliding-
+window `RateLimiter` (in-memory, swappable for Redis-backed later behind
+the same interface) and a minimal bearer-token `AuthContext` abstraction
+for the FastAPI layer (Phase 8). The SQL-injection validator from Phase 4
+is re-exported here too, lazily (via module `__getattr__`) so that rate
+limiting and auth — which need nothing but the standard library — aren't
+forced to pull in pydantic/SQLAlchemy just to be imported.
+
+**Human approval** (`app/tools/approvals.py`) is now a real, persisted
+workflow against the `human_approvals` table: `request_human_approval`,
+`approve_action`, `reject_action`, `request_more_information`,
+`get_pending_approvals` — with a guard against re-deciding an
+already-decided approval. The graph's `human_review` node calls
+`request_human_approval` for real now, instead of just returning an
+escalation message, so every escalation is durably recorded for the
+Streamlit approval page (Phase 9) to act on.
+
+All of `input.py`, `output.py`, and (after refactoring out its eager
+sql_agent import) `security.py`'s `RateLimiter`/`AuthContext` depend on
+nothing but the standard library, so **all 16 of their tests ran with
+the real, unmodified Python interpreter** in this sandbox — including
+every named injection/jailbreak pattern, both secret-pattern types, and
+the sliding-window rate limiter's expiry behavior. The full graph was
+re-verified afterward (8 scenarios now, up from 6) via the pydantic
+shim, including the two new ones: a prompt-injection query correctly
+blocked before the router ever runs, and a simulated leaked API key in
+a RAG answer correctly redacted from the final response even though it
+had high enough confidence to otherwise pass validation cleanly.
+
 ## Getting started (local mode — no API keys needed)
 
 ```bash
@@ -335,7 +388,7 @@ mypy app
 - [x] Phase 4 — SQL agent (safe/parameterized, read-only) + typed tool set (search_incidents, get_incident_history, calculate_priority, check_system_status, check_software_version, create/update/get_ticket, search_knowledge_base) + tool agent dispatcher
 - [x] Phase 5 — LangGraph orchestration (router -> parallel RAG/SQL/tools -> diagnosis -> validation -> safe response / retry / human review)
 - [x] Phase 6 — Diagnosis + validation agents (evidence-weighted confidence, known-bad-version cross-referencing, hallucination/citation/policy checks)
-- [ ] Phase 7 — Guardrails + human approval
+- [x] Phase 7 — Guardrails (input/output/security) + human approval workflow (request/approve/reject/request-more-info, persisted to `human_approvals`)
 - [ ] Phase 8 — FastAPI (full route set)
 - [ ] Phase 9 — Streamlit UI
 - [ ] Phase 10 — Evaluation framework
