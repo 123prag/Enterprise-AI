@@ -392,6 +392,47 @@ in-memory database, including the full human-approval round trip via the
 API (chat triggers escalation → approve via `/approve-action` → confirm
 it can't be re-decided) and a real 429 after exhausting the rate limit.
 
+## Streamlit UI (Phase 9)
+
+Five pages under `frontend/`, talking to the FastAPI backend over HTTP
+(`API_BASE_URL`, default `http://localhost:8000`) rather than importing
+`app.*` directly — frontend and backend are independently deployable:
+
+| Page | Purpose |
+|---|---|
+| `app.py` (Chat) | Interactive assistant — posts to `/chat`, shows the response, citations, confidence/risk, and an escalation banner with the approval id when a request needs human review |
+| `pages/1_Agent_Trace.py` | Per-request tool execution trace (tool name, latency, success, error) via a new `GET /trace/{request_id}` endpoint |
+| `pages/2_Human_Approval.py` | Lists pending approvals (`GET /pending-approvals`) with Approve / Reject / Request-more-info buttons |
+| `pages/3_Evaluation_Dashboard.py` | Shows real tool-level metrics; **honestly reports zero evaluation records** until Phase 10 populates the `evaluations` table, rather than fabricating retrieval/generation quality numbers |
+| `pages/4_Monitoring.py` | Tool usage bar chart, error rate, latency, escalation counts — all real `/metrics` data; explicitly flags that per-agent (`agent_runs`) breakdowns await Phase 11 instrumentation |
+
+Two small API additions beyond the original fixed route list were
+necessary to make the spec's own UI requirements buildable at all:
+`GET /pending-approvals` (the Human Approval page needs a way to list
+what's pending) and `GET /trace/{request_id}` (the Agent Trace page
+needs a way to look up one request's execution). A third,
+`POST /request-more-info`, was added rather than overloading
+`/reject-action` to mean two different things, since the spec explicitly
+calls for three distinct decisions (Approve / Reject / Request more
+information).
+
+`requests` was added to `requirements.txt` for the frontend's HTTP
+client. Both `requests` and `pandas` happened to be available in this
+authoring sandbox, so the API client's response-handling logic (success
+passthrough, error-with-detail, error-with-no-json-body fallback) and
+the pandas data-transformation logic behind the Monitoring/Agent-Trace
+pages (tool-usage sorting, trace dataframe + latency/success
+aggregation) were extracted and **actually executed** here, not just
+syntax-checked — `streamlit` itself isn't installed in this sandbox, so
+the pages' rendering can't be verified until you run them.
+
+Run both halves together:
+
+```bash
+uvicorn app.main:app --reload &
+streamlit run frontend/app.py
+```
+
 ## Getting started (local mode — no API keys needed)
 
 ```bash
@@ -421,7 +462,7 @@ mypy app
 - [x] Phase 6 — Diagnosis + validation agents (evidence-weighted confidence, known-bad-version cross-referencing, hallucination/citation/policy checks)
 - [x] Phase 7 — Guardrails (input/output/security) + human approval workflow (request/approve/reject/request-more-info, persisted to `human_approvals`)
 - [x] Phase 8 — FastAPI (full route set: /chat, /incidents, /search, /approve-action, /reject-action, /health, /metrics, /evaluate) (full route set)
-- [ ] Phase 9 — Streamlit UI
+- [x] Phase 9 — Streamlit UI (Chat, Agent Trace, Human Approval, Evaluation Dashboard, Monitoring)
 - [ ] Phase 10 — Evaluation framework
 - [ ] Phase 11 — Observability
 - [ ] Phase 12 — Docker

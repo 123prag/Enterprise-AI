@@ -31,8 +31,10 @@ from app.api.schemas import (
     IncidentCreateResponse,
     IncidentDetailResponse,
     MetricsResponse,
+    PendingApprovalOut,
     SearchRequest,
     SearchResponse,
+    ToolCallTraceEntry,
 )
 from app.config import get_settings
 from app.database.models import AgentRun, ApprovalDecision, Evaluation, HumanApproval, Incident, ToolCall, User
@@ -247,9 +249,68 @@ def reject_action_route(body: ApprovalDecisionRequest) -> ApprovalDecisionRespon
     return ApprovalDecisionResponse(approval_id=body.approval_id, decision=result["decision"])
 
 
-# --------------------------------------------------------------------------
-# /metrics
-# --------------------------------------------------------------------------
+@router.post("/request-more-info", response_model=ApprovalDecisionResponse, tags=["approvals"])
+def request_more_info_route(body: ApprovalDecisionRequest) -> ApprovalDecisionResponse:
+    """Not in the original spec's fixed route list, but the spec's own
+    Streamlit requirement is explicit: 'Approve / Reject / Request more
+    information'. Rather than overload /reject-action to mean two
+    different things, this is its own endpoint over the same
+    request_more_information tool from Phase 7.
+    """
+    result = dispatch(
+        "request_more_information",
+        {"approval_id": body.approval_id, "decided_by": body.decided_by, "notes": body.notes},
+    )
+    if not result.get("success", True):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("error"))
+    return ApprovalDecisionResponse(approval_id=body.approval_id, decision=result["decision"])
+
+
+@router.get("/pending-approvals", response_model=list[PendingApprovalOut], tags=["approvals"])
+def pending_approvals() -> list[PendingApprovalOut]:
+    """Not in the original spec's fixed route list, but required to
+    fulfill the explicit Streamlit requirement ("Human Approval: Display
+    pending actions") -- there's no way to build that page without a way
+    to list what's pending.
+    """
+    result = dispatch("get_pending_approvals", {})
+    return [
+        PendingApprovalOut(
+            approval_id=a["approval_id"],
+            request_id=a["request_id"],
+            proposed_action=a["proposed_action"],
+            risk_level=a["risk_level"],
+            reason=a.get("reason"),
+            created_at=a["created_at"],
+        )
+        for a in result.get("approvals", [])
+    ]
+
+
+@router.get("/trace/{request_id}", response_model=list[ToolCallTraceEntry], tags=["system"])
+def trace(request_id: str, db: Session = Depends(get_db)) -> list[ToolCallTraceEntry]:
+    """Execution trace for one /chat request: every tool call made during
+    that graph run, in order. Also not in the original route list, added
+    for the same reason as /pending-approvals -- the spec's Agent Trace
+    page needs *something* to call. Only execution metadata is exposed
+    (tool name, timing, success) -- never hidden chain-of-thought, since
+    none is stored anywhere in this system to begin with. Full per-node
+    (router/diagnosis/validation) tracing is a Phase 11 addition; today
+    this reflects only the tool_calls table.
+    """
+    rows = db.execute(
+        select(ToolCall).where(ToolCall.request_id == request_id).order_by(ToolCall.called_at)
+    ).scalars().all()
+    return [
+        ToolCallTraceEntry(
+            tool_name=r.tool_name,
+            success=r.success,
+            latency_ms=r.latency_ms,
+            called_at=r.called_at,
+            error=r.error,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/metrics", response_model=MetricsResponse, tags=["system"])
@@ -266,6 +327,11 @@ def metrics(db: Session = Depends(get_db)) -> MetricsResponse:
     ).scalar_one()
     total_evaluations = db.execute(select(func.count()).select_from(Evaluation)).scalar_one()
 
+    tool_usage_rows = db.execute(
+        select(ToolCall.tool_name, func.count()).group_by(ToolCall.tool_name)
+    ).all()
+    tool_usage = {name: count for name, count in tool_usage_rows}
+
     error_rate = (failed_tool_calls / total_tool_calls) if total_tool_calls else 0.0
 
     return MetricsResponse(
@@ -276,6 +342,7 @@ def metrics(db: Session = Depends(get_db)) -> MetricsResponse:
         total_human_approvals=total_approvals,
         pending_human_approvals=pending_approvals,
         total_evaluations=total_evaluations,
+        tool_usage=tool_usage,
     )
 
 

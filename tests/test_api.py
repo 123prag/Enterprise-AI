@@ -142,6 +142,48 @@ def test_approve_action_unknown_id_returns_400():
     assert resp.status_code == 400
 
 
+def test_pending_approvals_lists_open_escalations():
+    chat_resp = client.post("/chat", json={"query": "Modify the firewall rule to allow port 9090."})
+    approval_id = chat_resp.json()["human_approval"]["approval_id"]
+
+    resp = client.get("/pending-approvals")
+    assert resp.status_code == 200
+    ids = [a["approval_id"] for a in resp.json()]
+    assert approval_id in ids
+
+
+def test_request_more_info_endpoint():
+    chat_resp = client.post("/chat", json={"query": "Suspend the account for this contractor."})
+    approval_id = chat_resp.json()["human_approval"]["approval_id"]
+
+    resp = client.post(
+        "/request-more-info",
+        {"approval_id": approval_id, "decided_by": "carol", "notes": "which contractor?"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["decision"] == "more_info_requested"
+
+    # can no longer approve after more-info was recorded
+    follow_up = client.post("/approve-action", json={"approval_id": approval_id, "decided_by": "carol"})
+    assert follow_up.status_code == 400
+
+
+def test_trace_endpoint_returns_tool_calls_for_request():
+    chat_resp = client.post("/chat", json={"query": "Create a support ticket for this VPN problem."})
+    request_id = chat_resp.json()["request_id"]
+
+    resp = client.get(f"/trace/{request_id}")
+    assert resp.status_code == 200
+    trace = resp.json()
+    assert any(entry["tool_name"] == "create_ticket" for entry in trace)
+
+
+def test_trace_endpoint_empty_for_unknown_request_id():
+    resp = client.get("/trace/does-not-exist")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
 def test_full_human_approval_flow_via_api():
     chat_resp = client.post("/chat", json={"query": "Delete the account for former-employee@corp.com."})
     approval_id = chat_resp.json()["human_approval"]["approval_id"]

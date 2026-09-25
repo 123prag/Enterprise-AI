@@ -120,6 +120,23 @@ class ApprovalDecisionResponse(BaseModel):
     decision: str
 
 
+class PendingApprovalOut(BaseModel):
+    approval_id: int
+    request_id: str
+    proposed_action: str
+    risk_level: str
+    reason: str | None
+    created_at: datetime
+
+
+class ToolCallTraceEntry(BaseModel):
+    tool_name: str
+    success: bool
+    latency_ms: float | None
+    called_at: datetime
+    error: str | None = None
+
+
 # --------------------------------------------------------------------------
 # /metrics
 # --------------------------------------------------------------------------
@@ -133,6 +150,7 @@ class MetricsResponse(BaseModel):
     total_human_approvals: int
     pending_human_approvals: int
     total_evaluations: int
+    tool_usage: dict[str, int] = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

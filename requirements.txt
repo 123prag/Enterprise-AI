@@ -26,6 +26,7 @@ plotly==5.24.1
 
 # --- HTTP / providers ---
 httpx==0.28.1
+requests==2.32.3
 tenacity==9.0.0
 
 # --- Document parsing ---
